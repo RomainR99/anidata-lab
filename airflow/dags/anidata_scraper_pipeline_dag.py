@@ -14,7 +14,7 @@ DEFAULT_ARGS: dict[str, object] = {
 }
 
 
-SCRAPER_BASE_URL = os.getenv("ANIDATA_SCRAPER_BASE_URL", "http://host.docker.internal:8088")
+SCRAPER_BASE_URL = os.getenv("ANIDATA_SCRAPER_BASE_URL", "http://mock-site")
 SCRAPER_OUTPUT_DIR = "/opt/airflow/data/raw"
 AIRFLOW_HOME = "/opt/airflow"
 

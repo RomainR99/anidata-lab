@@ -82,6 +82,21 @@ services:
       - anidata-network
 
   # ==========================================
+  # MOCK SITE (source du scraper)
+  # ==========================================
+  mock-site:
+    image: nginx:alpine
+    container_name: anidata-mock-site
+    volumes:
+      - ./mock-site/site:/usr/share/nginx/html:ro
+    ports:
+      - "8088:80"
+    mem_limit: 64m
+    restart: unless-stopped
+    networks:
+      - anidata-network
+
+  # ==========================================
   # POSTGRESQL (backend Airflow)
   # ==========================================
   postgres:
