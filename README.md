@@ -771,6 +771,156 @@ Interprétation :
 - le script n'applique aucun déploiement tant que la run n'est pas `completed + success`
 - au prochain passage cron, le script re-tente automatiquement
 
+### Explication complète de `auto_update_from_push.sh`
+
+Cette section explique le script de façon détaillée : variables, lock, API GitHub,
+conditions de décision, et enchaînement de bout en bout.
+
+#### 1) Flux complet du début à la fin
+
+Le script suit ce flux logique :
+
+1. active un mode Bash strict (`set -euo pipefail`) pour échouer vite et proprement,
+2. calcule ses chemins et paramètres (repo, branche, workflow, fichier d'état),
+3. prend un verrou (`LOCK_DIR`) pour éviter deux exécutions simultanées,
+4. lit le dernier commit de `main` via l'API GitHub,
+5. compare avec le dernier SHA déjà traité (fichier `.state/...sha.txt`),
+6. vérifie le statut du workflow GitHub Actions pour ce SHA précis,
+7. si CI verte, vérifie que le repo local est clean,
+8. fait `git fetch` puis `git pull --ff-only`,
+9. lance `deploy_airflow_from_ghcr.sh`,
+10. lance `run_e2e_airflow_check.sh`,
+11. enregistre le SHA traité dans `.state` seulement après succès.
+
+#### 2) Rôle des variables principales
+
+- `SCRIPT_DIR` : dossier du script en cours (`scripts/`), calculé de manière robuste.
+- `REPO_ROOT` : racine du repo (parent de `scripts/`), utilisée pour les chemins absolus.
+- `TARGET_BRANCH` : branche surveillée (par défaut `main`).
+- `GITHUB_OWNER` / `GITHUB_REPO` : repo GitHub cible pour les appels API.
+- `GITHUB_TOKEN` : token optionnel pour éviter les limites de rate limit API.
+- `WORKFLOW_FILE` : workflow CI à vérifier (`ci-cd.yml`).
+- `REMOTE_NAME` : remote Git utilisé pour fetch/pull (par défaut `origin`).
+- `LOCK_DIR` : chemin du verrou d'exécution unique.
+- `STATE_DIR` : dossier local qui stocke l'état métier du script.
+- `STATE_FILE` : fichier SHA du dernier commit déjà traité avec succès.
+- `API_URL` : endpoint GitHub pour le dernier commit de la branche.
+- `RUNS_URL` : endpoint GitHub Actions pour le workflow lié à ce SHA.
+- `REMOTE_SHA` : SHA du dernier commit distant détecté.
+- `LAST_SEEN_SHA` : dernier SHA déjà traité (lu dans `STATE_FILE`).
+- `RUN_STATUS` : état d'exécution du workflow (`queued`, `in_progress`, `completed`, etc.).
+- `RUN_CONCLUSION` : résultat final du workflow (`success`, `failure`, `cancelled`, etc.).
+
+#### 3) Appels API GitHub (commits + workflows)
+
+Le script fait deux appels API :
+
+1. Commit de branche :
+   - `GET /repos/<owner>/<repo>/commits/<branch>`
+   - objectif : récupérer `REMOTE_SHA` (dernier commit de `main`).
+
+2. Workflow pour ce commit :
+   - `GET /repos/<owner>/<repo>/actions/workflows/<workflow_file>/runs?head_sha=<sha>&branch=<branch>&event=push&per_page=1`
+   - objectif : récupérer le run GitHub Actions correspondant au commit et lire
+     `status` + `conclusion`.
+
+Le paramètre `head_sha` est la clé : il force le filtrage sur le commit exact, pas
+sur "la dernière run de la branche" en général.
+
+#### 4) Vérifie-t-il bien le workflow du dernier push sur la branche ?
+
+Oui :
+
+- le script prend d'abord le dernier SHA de `main`,
+- puis interroge les runs du workflow `ci-cd.yml` avec `head_sha=<ce_sha>`,
+- et filtre aussi avec `branch=main` et `event=push`.
+
+Donc la décision de déployer est prise sur la CI du commit courant de `main`.
+
+#### 5) Différence entre `status` et `conclusion`
+
+- `status` = état d'avancement (ex: `queued`, `in_progress`, `completed`).
+- `conclusion` = résultat final, uniquement pertinent quand `status=completed`
+  (ex: `success`, `failure`, `cancelled`, `timed_out`).
+
+Règle implémentée :
+
+- si `status != completed` -> le script attend (prochain passage cron),
+- si `status = completed` mais `conclusion != success` -> blocage déploiement,
+- si `status = completed` et `conclusion = success` -> déploiement autorisé.
+
+#### 6) Cas de décision (attend, bloque, ou déploie)
+
+- **Attend le cron suivant** : CI pas terminée (`status=in_progress` par exemple).
+- **Bloque le déploiement** : CI terminée mais pas verte (`conclusion=failure`, etc.).
+- **Lance pull + déploiement** : commit nouveau + CI verte + repo local clean.
+
+#### 7) Système de lock (`LOCK_DIR`) en détail
+
+Un lock ici est un mécanisme d'exclusion mutuelle : une seule instance du script
+peut travailler à la fois.
+
+Pourquoi un dossier (`mkdir`) :
+
+- `mkdir` est atomique : deux processus qui tentent de créer le même dossier en
+  même temps ne peuvent pas réussir tous les deux.
+- c'est simple, robuste, portable pour un script shell.
+
+Sans lock, deux runs simultanées peuvent :
+
+- déclencher deux `git pull` concurrents,
+- redémarrer Docker en parallèle,
+- lancer plusieurs checks E2E en collision,
+- provoquer des états incohérents ou des erreurs transitoires difficiles à diagnostiquer.
+
+Rôle de `trap cleanup EXIT` :
+
+- garantit la suppression du lock à la fin du script, même en cas d'erreur ou
+  sortie anticipée,
+- évite de laisser un "faux verrou" qui bloquerait les prochains runs.
+
+Pourquoi supprimer le lock à la fin :
+
+- pour autoriser les exécutions suivantes (cron ou manuel).
+
+Si on ne le supprimait pas :
+
+- toutes les exécutions futures verraient "Another run is already in progress"
+  et s'arrêteraient en boucle, même si aucun run n'est réellement active.
+
+#### 8) Rôle de `git fetch` et `git pull --ff-only`
+
+- `git fetch origin main` : met à jour les références distantes locales sans modifier
+  la branche courante.
+- `git pull --ff-only origin main` : met à jour localement uniquement si un
+  fast-forward est possible (pas de merge commit automatique).
+
+Pourquoi `--ff-only` :
+
+- comportement prédictible et sûr pour un job auto,
+- échoue si l'historique local diverge (au lieu de créer un merge non désiré).
+
+#### 9) Rôle des scripts appelés
+
+- `scripts/deploy_airflow_from_ghcr.sh` :
+  - pull l'image Airflow depuis GHCR,
+  - redémarre les services Docker Compose,
+  - attend les états de santé (Airflow/Elasticsearch).
+
+- `scripts/run_e2e_airflow_check.sh` :
+  - vérifie API Airflow,
+  - déclenche le DAG scraper,
+  - attend son succès,
+  - contrôle un indicateur Elasticsearch (`_count`).
+
+#### 10) Pourquoi stocker un SHA dans `.state`
+
+Le fichier `.state/last_seen_main_sha.txt` sert de mémoire entre deux exécutions :
+
+- évite de retraiter le même commit à chaque passage cron,
+- rend le script idempotent côté orchestration,
+- permet de ne marquer un SHA "traité" qu'après un cycle complet réussi.
+
 ---
 
 ## ⚡ Commandes utiles
