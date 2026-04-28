@@ -6,23 +6,27 @@
 ---
 
 ## Sommaire
-1. **Démarrage**
-   - [Prérequis](#prerequis)
-   - [Installation (5 minutes)](#installation-5-minutes)
-   - [Utilisation au fil de la semaine](#utilisation-au-fil-de-la-semaine)
-2. **Architecture & contexte**
+### Niveau 1 — Essentiel (nouveau lecteur)
+
+1. [Prérequis](#prerequis)
+2. [Installation (5 minutes)](#installation-5-minutes)
+3. [Utilisation au fil de la semaine](#utilisation-au-fil-de-la-semaine)
+4. [Commandes utiles](#commandes-utiles)
+5. [Dépannage](#depannage)
+
+### Niveau 2 — Avancé (architecture, CI/CD, automatisation)
+
+1. **Contexte du projet**
    - [Documentation du projet](#documentation-du-projet)
    - [Architecture du projet](#architecture-du-projet)
    - [Consommation mémoire (optimisée pour 8 Go)](#consommation-memoire)
-3. **CI/CD & déploiement**
+2. **CI/CD, qualité et déploiement**
    - [CI GitHub Actions & protection de main](#ci-github-actions--protection-de-main)
+   - [Lint : définition rapide et lien avec `needs: [lint, tests]`](#lint--definition-rapide-et-lien-avec-needs-lint-tests)
    - [Feuille de route intégrée : CI verte -> relance Airflow -> DAGs automatiques](#feuille-de-route-integree)
    - [Après "✅ Image publiée sur GHCR" : ce que ça signifie vraiment](#apres-ghcr)
    - [Peut-on automatiser totalement après CI verte ?](#automatisation-apres-ci)
-4. **Exploitation quotidienne**
-   - [Commandes utiles](#commandes-utiles)
-   - [Dépannage](#depannage)
-   - [Ressources](#ressources)
+3. [Ressources](#ressources)
 
 ## 📋 Prérequis
 
@@ -316,6 +320,26 @@ Le workflow `/.github/workflows/ci-cd.yml` automatise les contrôles qualité à
 
 Objectif : empêcher l’intégration de changements cassés et garantir un niveau
 minimum de qualité avant merge.
+
+### Lint : définition rapide et lien avec `needs: [lint, tests]`
+
+`lint`, c’est l’étape qui vérifie la qualité/syntaxe/style du code
+automatiquement, sans lancer l’application.
+
+Dans le workflow, `needs: [lint, tests]` veut dire :
+
+- le job courant attend que les jobs `lint` et `tests` soient terminés,
+- et en pratique, il ne continue que si ces deux jobs sont en succès.
+
+Différence rapide :
+
+- `lint` : "le code est-il propre/conforme ?" (format, imports, règles, erreurs statiques),
+- `tests` : "le code fonctionne-t-il comme prévu ?" (comportement métier).
+
+Exemples d’outils de lint courants :
+
+- Python : `ruff`, `flake8`, `black --check`
+- JS/TS : `eslint`, `prettier --check`
 
 ### Ruff : où c'est configuré et à quoi ça sert
 
@@ -770,6 +794,39 @@ Interprétation :
 - la CI n'est pas encore terminée
 - le script n'applique aucun déploiement tant que la run n'est pas `completed + success`
 - au prochain passage cron, le script re-tente automatiquement
+
+Exemple réel : chaîne CI/CD complète validée (de bout en bout)
+
+```text
+./scripts/auto_update_from_push.sh
+[2026-04-28 11:08:52] Checking latest commit on GitHub API: RomainR99/anidata-lab@main
+[2026-04-28 11:08:53] New commit detected on GitHub: 9596c16fe90ba1c2391f12006209b9764386c5ad -> 7c723866f018036534627e1ac21f9862b6bf6949
+[2026-04-28 11:08:53] Checking CI workflow status: ci-cd.yml for 7c723866f018036534627e1ac21f9862b6bf6949
+[2026-04-28 11:08:53] CI is green for 7c723866f018036534627e1ac21f9862b6bf6949. Starting deploy pipeline.
+[2026-04-28 11:08:54] Deploying updated stack
+==> Pull image from GHCR: ghcr.io/romainr99/anidata-lab-airflow:latest
+Status: Image is up to date for ghcr.io/romainr99/anidata-lab-airflow:latest
+==> Restart platform services with docker compose
+Airflow webserver and Elasticsearch are healthy, Grafana is running.
+[2026-04-28 11:09:37] Running end-to-end Airflow check
+==> Trigger DAG: anidata_scraper_pipeline
+Poll 1/60: state=queued
+Poll 2/60: state=running
+Poll 3/60: state=success
+==> Checking Elasticsearch index document count
+Index anime document count: 17588
+==> E2E check completed successfully.
+[2026-04-28 11:10:13] Auto-update and verification completed successfully.
+```
+
+Ce run confirme que la chaîne CI/CD est complète :
+
+- commit pushé sur `main` détecté,
+- CI GitHub Actions validée (`completed + success`),
+- image GHCR pullée et stack redéployée,
+- DAG Airflow déclenché et terminé en `success`,
+- index Elasticsearch vérifié,
+- vérification E2E finale en succès.
 
 ### Explication complète de `auto_update_from_push.sh`
 
