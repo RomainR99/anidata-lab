@@ -1268,6 +1268,37 @@ Image (clic pour déclencher le DAG) :
 - Aucun email d’échec n’a été envoyé (tâche `send_email_audit_failed` en `skipped`) :
   <img src="notebooks/images/skipped_task.png" alt="skipped_task.png" width="800" />
 
+### Résultat final : validation auto-update + E2E
+
+Exemple réel (run manuel avec log consolidé) :
+
+```text
+cd /Users/romain/Desktop/anidata-lab && /bin/bash /Users/romain/Desktop/anidata-lab/scripts/auto_update_from_push.sh >> /tmp/anidata_auto_update.log 2>&1
+...
+==> Current service status
+anidata-airflow-scheduler   ghcr.io/romainr99/anidata-lab-airflow:latest   Up
+anidata-airflow-webserver   ghcr.io/romainr99/anidata-lab-airflow:latest   Up (health: starting)
+anidata-elasticsearch       docker.elastic.co/elasticsearch/elasticsearch:8.12.0   Up (healthy)
+anidata-grafana             grafana/grafana-oss:10.3.1   Up
+anidata-postgres            postgres:15-alpine   Up (healthy)
+==> Waiting for Airflow webserver and Elasticsearch health
+Airflow webserver and Elasticsearch are healthy, Grafana is running.
+[2026-04-28 11:55:49] Running end-to-end Airflow check
+==> Trigger DAG: anidata_scraper_pipeline
+Poll 1/60: state=queued
+Poll 2/60: state=running
+Poll 3/60: state=running
+[2026-04-28 11:56:23] CI is green for 6a005f29cda807682cbbd35c007b4a903060f1b3. Starting deploy pipeline.
+[2026-04-28 11:56:23] Working tree is not clean, skipping auto-update to avoid conflicts.
+```
+
+Lecture des résultats :
+
+- la stack Docker redémarre correctement (Postgres, Elasticsearch, Airflow, Grafana),
+- le check E2E démarre et le DAG `anidata_scraper_pipeline` passe de `queued` à `running`,
+- le script de surveillance relancé en parallèle détecte une CI verte,
+- la protection "working tree clean" joue son rôle et bloque un déploiement concurrent si le dépôt local n'est pas propre.
+
 ### DAG2 : pourquoi le total passe de 17562 à 17588
 
 Le panneau Grafana **“Total animes indexés”** compte les documents dans l’index Elasticsearch `anime`.
