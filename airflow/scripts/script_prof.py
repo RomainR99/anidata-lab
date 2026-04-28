@@ -21,6 +21,7 @@ import re
 import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 try:
     from elasticsearch import Elasticsearch, helpers
@@ -52,6 +53,7 @@ if ES_HOST is None:
     )
 
 INPUT_FILE = os.path.join(BASE_DIR, "output", "anime_gold.json")
+RAW_DIR = os.path.join(BASE_DIR, "data", "raw")
 
 class C:
     H = "\033[95m"; B = "\033[94m"; G = "\033[92m"
@@ -104,6 +106,63 @@ def load_json_documents(path):
                 continue
             docs.append(json.loads(line))
         return docs
+
+
+def load_latest_scraper_documents(raw_dir):
+    """
+    Charge le dernier fichier raw/anime_*.json du scraper et le convertit
+    vers des documents indexables en complément du dataset gold.
+    """
+    raw_path = None
+    try:
+        candidates = sorted(Path(raw_dir).glob("anime_*.json"))
+        if candidates:
+            raw_path = str(candidates[-1])
+    except Exception:
+        raw_path = None
+
+    if not raw_path:
+        return [], None
+
+    with open(raw_path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+
+    animes = payload.get("animes", [])
+    scraped_at = payload.get("scraped_at")
+    docs = []
+    for a in animes:
+        raw_id = a.get("id")
+        if raw_id is None:
+            # Skip entries without stable id to avoid duplicates across runs
+            continue
+
+        # Offset IDs to avoid collision with MAL ids from anime_gold.json
+        synthetic_id = 10_000_000 + int(raw_id)
+        genres = a.get("genres") or []
+        main_genre = genres[0] if genres else None
+
+        docs.append(
+            {
+                "mal_id": synthetic_id,
+                "name": a.get("title_en"),
+                "japanese_name": a.get("title_jp"),
+                "score": a.get("score"),
+                "type": a.get("type"),
+                "episodes": a.get("episodes"),
+                "year": a.get("year"),
+                "main_studio": a.get("studio"),
+                "studios": a.get("studio"),
+                "genres": genres,
+                "main_genre": main_genre,
+                "detail_url": a.get("detail_url"),
+                "status": a.get("status"),
+                "synopsis": a.get("synopsis"),
+                "source_dataset": "scraper_raw",
+                "@timestamp": scraped_at or datetime.now(timezone.utc).isoformat(),
+            }
+        )
+
+    return docs, raw_path
 
 
 # ============================================
@@ -262,6 +321,17 @@ except Exception as e:
 
 taille_mb = os.path.getsize(INPUT_FILE) / (1024 * 1024)
 ok(f"Fichier chargé : {len(docs):,} documents ({taille_mb:.1f} MB)")
+
+# Ajouter les données raw du scraper (optionnel) pour avoir le +103 dans Grafana.
+scraper_docs, scraper_raw_path = load_latest_scraper_documents(RAW_DIR)
+if scraper_docs:
+    docs.extend(scraper_docs)
+    info(
+        f"Complément scraper ajouté : {len(scraper_docs):,} documents "
+        f"(source: {scraper_raw_path})"
+    )
+else:
+    warn("Aucun fichier raw/anime_*.json trouvé, indexation sans complément scraper.")
 
 # Aperçu du premier document
 if docs:
